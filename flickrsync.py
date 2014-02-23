@@ -5,10 +5,38 @@ import hashlib
 import sys
 import os
 import ConfigParser
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, create_engine, and_
+from sqlalchemy.orm import backref, relationship, Session
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import inspect
 
 # https://github.com/alexis-mignon/python-flickr-api/wiki/Tutorial
 # http://www.flickr.com/groups/api/discuss/72157594497877875/
 # https://www.bionicspirit.com/blog/2011/10/29/how-i-use-flickr.html
+
+Base = declarative_base()
+
+class Photo(Base):
+    __tablename__ = 'photos'
+    id = Column(Integer, primary_key=True)
+    title = Column(String)
+    tags = Column(String)
+    date_taken = Column(DateTime)
+    md5 = Column(String)
+
+class PhotoPhotosetLink(Base):
+    __tablename__ = 'photo_photoset'
+    photo_id = Column(Integer, ForeignKey('photos.id'), primary_key=True)
+    photoset_id = Column(Integer, ForeignKey('photosets.id'), primary_key=True)
+
+class Photoset(Base):
+    __tablename__ = 'photosets'
+    id = Column(Integer, primary_key=True)
+    title = Column(String)
+
+engine = create_engine('sqlite:///%s' % os.path.expanduser('~/.flickr_sync.db'))
+Base.metadata.create_all(engine)
+session = Session(engine)
 
 
 config_filename = os.path.expanduser('~/.flickr_sync.cfg')
@@ -26,6 +54,9 @@ parser_update.add_argument('md5', action='store_true')
 
 parser_list = subparsers.add_parser('list')
 parser_list.add_argument("--photos", action='store_true')
+
+parser_dbtest = subparsers.add_parser('dbtest')
+
 args = parser.parse_args()
 
 flickr_api.set_keys(api_key = API_KEY, api_secret = SHARED_SECRET)
@@ -40,13 +71,40 @@ a.set_verifier(token)
 flickr_api.set_auth_handler(a)
 a.save('flickr_api.auth')
 """
-flickr_api.set_auth_handler("flickr_api.auth")
+flickr_api.set_auth_handler(os.path.expanduser('~/.flickr_api.auth'))
 user = flickr_api.test.login()
 if args.command == 'list':
     pages = user.getPhotos().info.pages
     for i in range(1,pages):
         for p in user.getPhotos(page=i,extras='machine_tags,date_taken'):
             print i, p.title, p.datetaken, p, 'machine_tags:', 'checksum:md5=' in p.machine_tags
+    sys.exit(0)
+if args.command == 'dbtest':
+    photosets = user.getPhotosets()
+    photocnt = 0
+    for ps in photosets:
+        if session.query(Photoset).filter(Photoset.id==ps.id).count() == 0:
+            photoset = Photoset(id=ps.id, title=ps.title)
+            session.add(photoset)
+            session.commit()
+        
+        for p in ps.getPhotos(extras='machine_tags,date_taken,date_upload,tags'):
+            photocnt += 1
+            print photocnt, p.title, p.datetaken, p, 'machine_tags:', 'checksum:md5=' in p.machine_tags
+            md5 = ''
+            if 'checksum:md5=' in p.machine_tags:
+                md5 = [mt for mt in p.machine_tags.split(' ') if mt.startswith('checksum:md5=')][0].split('=')[1]
+            date_taken = datetime.datetime.strptime(p.datetaken, '%Y-%m-%d %H:%M:%S')
+            if (session.query(Photo).filter(Photo.id==p.id).count() == 0):
+                photo = Photo(id=p.id, md5=md5, title=p.title, tags=p.tags, date_taken=date_taken)
+                session.add(photo)
+            if (session.query(PhotoPhotosetLink).filter(and_(PhotoPhotosetLink.photo_id==p.id, 
+                                                             PhotoPhotosetLink.photoset_id==ps.id)
+                                                       ).count() == 0):
+                ppl = PhotoPhotosetLink(photo_id=p.id, photoset_id=ps.id)
+                session.add(ppl)
+                session.commit()
+        
     sys.exit(0)
 photos_total = user.getPhotos().info.total
 photosets = user.getPhotosets()
