@@ -5,34 +5,41 @@ import hashlib
 import sys
 import os
 import ConfigParser
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, create_engine, and_
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, ForeignKey, create_engine, and_
 from sqlalchemy.orm import backref, relationship, Session
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import inspect
+from sqlalchemy import inspect, event
+from sqlalchemy.engine import Engine
 
 # https://github.com/alexis-mignon/python-flickr-api/wiki/Tutorial
 # http://www.flickr.com/groups/api/discuss/72157594497877875/
 # https://www.bionicspirit.com/blog/2011/10/29/how-i-use-flickr.html
 
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON") 
+    cursor.close()
+
 Base = declarative_base()
 
 class Photo(Base):
     __tablename__ = 'photos'
-    id = Column(Integer, primary_key=True)
-    title = Column(String)
-    tags = Column(String)
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String(255))
+    tags = Column(String(255))
     date_taken = Column(DateTime)
-    md5 = Column(String)
+    md5 = Column(String(32))
 
 class PhotoPhotosetLink(Base):
     __tablename__ = 'photo_photoset'
-    photo_id = Column(Integer, ForeignKey('photos.id'), primary_key=True)
-    photoset_id = Column(Integer, ForeignKey('photosets.id'), primary_key=True)
+    photo_id = Column(BigInteger, ForeignKey('photos.id'), primary_key=True)
+    photoset_id = Column(BigInteger, ForeignKey('photosets.id'), primary_key=True)
 
 class Photoset(Base):
     __tablename__ = 'photosets'
-    id = Column(Integer, primary_key=True)
-    title = Column(String)
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String(255))
 
 engine = create_engine('sqlite:///%s' % os.path.expanduser('~/.flickr_sync.db'))
 Base.metadata.create_all(engine)
@@ -86,7 +93,6 @@ if args.command == 'dbtest':
         if session.query(Photoset).filter(Photoset.id==ps.id).count() == 0:
             photoset = Photoset(id=ps.id, title=ps.title)
             session.add(photoset)
-            session.commit()
         
         for p in ps.getPhotos(extras='machine_tags,date_taken,date_upload,tags'):
             photocnt += 1
@@ -103,8 +109,8 @@ if args.command == 'dbtest':
                                                        ).count() == 0):
                 ppl = PhotoPhotosetLink(photo_id=p.id, photoset_id=ps.id)
                 session.add(ppl)
-                session.commit()
-        
+        # Commit after each set for better performance.  After each photo is too slow.
+        session.commit()
     sys.exit(0)
 photos_total = user.getPhotos().info.total
 photosets = user.getPhotosets()
